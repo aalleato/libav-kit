@@ -1,5 +1,10 @@
 # libav-kit
 
+[![Swift 6.2+](https://img.shields.io/badge/Swift-6.2%2B-orange.svg)](https://swift.org)
+[![macOS 14.4+](https://img.shields.io/badge/macOS-14.4%2B-blue.svg)](https://www.apple.com/macos)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![SPM Compatible](https://img.shields.io/badge/SPM-Compatible-brightgreen.svg)](https://swift.org/package-manager)
+
 A Swift package wrapping FFmpeg's C libraries for audio decoding, encoding, metadata reading, tag writing, and cover art embedding. Uses the C API directly — no CLI shelling.
 
 ## Requirements
@@ -14,7 +19,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "git@github.com:nycjv321/libav-kit.git", branch: "main"),
+    .package(url: "git@github.com:aalleato/libav-kit.git", branch: "main"),
 ]
 ```
 
@@ -163,6 +168,61 @@ Playback target format specifying sample rate, channel count, sample format, and
 ### EncodingProfile
 
 Named, reusable encoding configuration with output format, settings, and optional path template.
+
+## Testing
+
+### Running Tests
+
+```bash
+# All tests (unit + BDD)
+swift test
+
+# BDD scenarios only
+swift test --filter BDDTests
+
+# Unit tests only (exclude BDD)
+swift test --skip BDDTests
+```
+
+### BDD Contract Tests
+
+83 Gherkin scenarios validate the public API across 4 feature files in `Features/` (at the project root, symlinked into the test target for SPM resource bundling):
+
+| Feature | Scenarios | What it tests |
+|---------|-----------|---------------|
+| `encoding.feature` | 30 | All 9 target formats, hi-res, downsampling |
+| `decoding.feature` | 30 | All 9 source codecs, sample rates, channels |
+| `cover_art.feature` | 12 | Embed and remove across 6 supported codecs |
+| `metadata.feature` | 11 | Tag write/read round-trip for all codecs |
+
+Uses [PickleKit](https://github.com/nycjv321/pickle-kit) with the Swift Testing bridge (`GherkinTestScenario`).
+
+### Filtering Scenarios
+
+```bash
+# Run scenarios by tag
+CUCUMBER_TAGS=smoke swift test --filter BDDTests
+
+# Exclude scenarios by tag
+CUCUMBER_EXCLUDE_TAGS=slow swift test --filter BDDTests
+
+# Run specific scenario by name
+CUCUMBER_SCENARIOS="Encode CD-quality source" swift test --filter BDDTests
+```
+
+### HTML Reports
+
+```bash
+# Generate a Cucumber-style HTML report
+PICKLE_REPORT=1 swift test --filter BDDTests
+
+# Custom output path
+PICKLE_REPORT=1 PICKLE_REPORT_PATH=build/report.html swift test --filter BDDTests
+```
+
+### Test Fixtures
+
+Parametric audio fixtures in `Tests/LibAVKitTests/Fixtures/Parametric/` cover 36 files across 9 codecs (FLAC, WAV, ALAC, AIFF, WavPack, MP3, AAC, Vorbis, Opus) at CD and hi-res sample rates with mono and stereo variants. A `cover.png` fixture is used for art embedding tests.
 
 ## Architecture
 

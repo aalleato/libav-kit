@@ -9,6 +9,9 @@ let package = Package(
     products: [
         .library(name: "LibAVKit", targets: ["LibAVKit"]),
     ],
+    dependencies: [
+        .package(url: "git@github.com:nycjv321/pickle-kit.git", branch: "main"),
+    ],
     targets: [
         .systemLibrary(
             name: "CFFmpeg",
@@ -28,8 +31,15 @@ let package = Package(
         ),
         .testTarget(
             name: "LibAVKitTests",
-            dependencies: ["LibAVKit"],
-            path: "Tests/LibAVKitTests"
+            dependencies: [
+                "LibAVKit",
+                .product(name: "PickleKit", package: "pickle-kit"),
+            ],
+            path: "Tests/LibAVKitTests",
+            resources: [
+                .copy("Features"),
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )
