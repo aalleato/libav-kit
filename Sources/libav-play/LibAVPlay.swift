@@ -23,6 +23,9 @@ struct LibAVPlay: ParsableCommand {
     var format: String?
 
     func run() throws {
+        // Disable stdout buffering so \r progress updates appear immediately
+        setbuf(stdout, nil)
+
         let isSTDIN = file == "-" || (file == nil && !isatty(STDIN_FILENO).boolValue)
 
         if isSTDIN {
@@ -64,12 +67,18 @@ struct LibAVPlay: ParsableCommand {
         }
 
         player.volume = volume
-        printMetadata(player.metadata, duration: player.duration, sampleRate: player.sampleRate, channels: player.channels)
+        printHeader(
+            title: player.metadata.title,
+            artist: player.metadata.artist,
+            album: player.metadata.album,
+            codec: player.metadata.codec,
+            sampleRate: player.sampleRate,
+            channels: player.channels,
+            duration: player.duration
+        )
 
         player.onProgress = { time in
-            let pct = player.duration > 0 ? time / player.duration * 100 : 0
-            print("\r  \(formatTime(time)) / \(formatTime(player.duration))  [\(String(format: "%.0f", pct))%]", terminator: "")
-            fflush(stdout)
+            writeProgress(elapsed: time, duration: player.duration)
         }
 
         player.onStateChange = { state in
@@ -117,7 +126,15 @@ struct LibAVPlay: ParsableCommand {
         )
         try decoder.reconfigure(outputFormat: outputFormat)
 
-        print("STDIN mode (\(format)): \(decoder.sampleRate) Hz, \(decoder.channels) ch, \(decoder.codecName)")
+        printHeader(
+            title: nil,
+            artist: nil,
+            album: nil,
+            codec: decoder.codecName,
+            sampleRate: decoder.sampleRate,
+            channels: decoder.channels,
+            duration: decoder.duration
+        )
 
         let output = AVAudioEngineOutput()
         try output.configure(sampleRate: Double(decoder.sampleRate), channels: decoder.channels)
@@ -135,12 +152,20 @@ struct LibAVPlay: ParsableCommand {
         }
         sigSource.resume()
 
+        // Track elapsed time from decoded samples
+        let sampleRate = Double(decoder.sampleRate)
+        let totalDuration = decoder.duration
+        let progress = SampleCounter()
+
         // Decode loop on a background queue
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 while true {
                     try decoder.decodeNextFrame { frame in
                         output.scheduleAudio(frame)
+                        progress.add(frame.frameCount)
+                        let elapsed = Double(progress.count) / sampleRate
+                        writeProgress(elapsed: elapsed, duration: totalDuration)
                     }
                 }
             } catch let error as DecoderError where error.isEndOfFile {
@@ -158,27 +183,36 @@ struct LibAVPlay: ParsableCommand {
     }
 }
 
+// MARK: - Sample Counter
+
+private final class SampleCounter: @unchecked Sendable {
+    private(set) var count: Int64 = 0
+    func add(_ n: Int) { count += Int64(n) }
+}
+
 // MARK: - Helpers
 
-private func printMetadata(_ meta: AudioMetadata, duration: TimeInterval, sampleRate: Int, channels: Int) {
+private func printHeader(
+    title: String?, artist: String?, album: String?,
+    codec: String, sampleRate: Int, channels: Int, duration: TimeInterval
+) {
     print("Now playing:")
-    if let title = meta.title {
-        print("  Title:  \(title)")
-    }
-    if let artist = meta.artist {
-        print("  Artist: \(artist)")
-    }
-    if let album = meta.album {
-        print("  Album:  \(album)")
-    }
-    if !meta.codec.isEmpty {
-        print("  Codec:  \(meta.codec)")
-    }
+    if let title { print("  Title:  \(title)") }
+    if let artist { print("  Artist: \(artist)") }
+    if let album { print("  Album:  \(album)") }
+    if !codec.isEmpty { print("  Codec:  \(codec)") }
     print("  Format: \(sampleRate) Hz, \(channels) ch")
-    if duration > 0 {
-        print("  Length: \(formatTime(duration))")
-    }
+    if duration > 0 { print("  Length: \(formatTime(duration))") }
     print()
+}
+
+private func writeProgress(elapsed: TimeInterval, duration: TimeInterval) {
+    if duration > 0 {
+        let pct = elapsed / duration * 100
+        fputs("\r  \(formatTime(elapsed)) / \(formatTime(duration))  [\(String(format: "%.0f", pct))%]", stdout)
+    } else {
+        fputs("\r  \(formatTime(elapsed))", stdout)
+    }
 }
 
 private func formatTime(_ seconds: TimeInterval) -> String {

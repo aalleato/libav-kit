@@ -224,6 +224,9 @@ Plays a local file using `AudioPlayer` with metadata display and progress tracki
 ```bash
 swift run libav-play song.flac
 swift run libav-play --volume 0.5 song.mp3
+
+# Quick test with a bundled fixture
+swift run libav-play Tests/LibAVKitTests/Fixtures/Parametric/flac-44100-stereo.flac
 ```
 
 ### STDIN mode
