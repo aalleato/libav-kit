@@ -67,6 +67,7 @@ struct LibAVPlay: ParsableCommand {
         }
 
         player.volume = volume
+        let duration = player.duration
         printHeader(
             title: player.metadata.title,
             artist: player.metadata.artist,
@@ -74,15 +75,12 @@ struct LibAVPlay: ParsableCommand {
             codec: player.metadata.codec,
             sampleRate: player.sampleRate,
             channels: player.channels,
-            duration: player.duration
+            duration: duration
         )
-
-        player.onProgress = { time in
-            writeProgress(elapsed: time, duration: player.duration)
-        }
 
         player.onStateChange = { state in
             if state == .completed {
+                writeProgress(elapsed: duration, duration: duration)
                 print("\nPlayback complete.")
                 LibAVPlay.exit()
             }
@@ -92,6 +90,15 @@ struct LibAVPlay: ParsableCommand {
             print("\nPlayback error: \(error)")
             LibAVPlay.exit(withError: ExitCode.failure)
         }
+
+        // Poll actual playback position on a timer instead of using onProgress,
+        // which fires during the decode loop (much faster than real-time).
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(250))
+        timer.setEventHandler {
+            writeProgress(elapsed: player.currentTime, duration: duration)
+        }
+        timer.resume()
 
         player.play()
         dispatchMain()
@@ -126,6 +133,7 @@ struct LibAVPlay: ParsableCommand {
         )
         try decoder.reconfigure(outputFormat: outputFormat)
 
+        let totalDuration = decoder.duration
         printHeader(
             title: nil,
             artist: nil,
@@ -133,7 +141,7 @@ struct LibAVPlay: ParsableCommand {
             codec: decoder.codecName,
             sampleRate: decoder.sampleRate,
             channels: decoder.channels,
-            duration: decoder.duration
+            duration: totalDuration
         )
 
         let output = AVAudioEngineOutput()
@@ -152,10 +160,15 @@ struct LibAVPlay: ParsableCommand {
         }
         sigSource.resume()
 
-        // Track elapsed time from decoded samples
-        let sampleRate = Double(decoder.sampleRate)
-        let totalDuration = decoder.duration
-        let progress = SampleCounter()
+        // Poll actual playback position on a timer
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(250))
+        timer.setEventHandler {
+            let elapsed = output.playbackPosition
+            guard elapsed >= 0 else { return }
+            writeProgress(elapsed: elapsed, duration: totalDuration)
+        }
+        timer.resume()
 
         // Decode loop on a background queue
         DispatchQueue.global(qos: .userInitiated).async {
@@ -163,9 +176,6 @@ struct LibAVPlay: ParsableCommand {
                 while true {
                     try decoder.decodeNextFrame { frame in
                         output.scheduleAudio(frame)
-                        progress.add(frame.frameCount)
-                        let elapsed = Double(progress.count) / sampleRate
-                        writeProgress(elapsed: elapsed, duration: totalDuration)
                     }
                 }
             } catch let error as DecoderError where error.isEndOfFile {
@@ -181,13 +191,6 @@ struct LibAVPlay: ParsableCommand {
 
         dispatchMain()
     }
-}
-
-// MARK: - Sample Counter
-
-private final class SampleCounter: @unchecked Sendable {
-    private(set) var count: Int64 = 0
-    func add(_ n: Int) { count += Int64(n) }
 }
 
 // MARK: - Helpers
