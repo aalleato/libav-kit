@@ -16,7 +16,15 @@ final class TestContext: @unchecked Sendable {
     var coverArtData: Data?
     var writeError: (any Error)?
 
+    // Playback
+    var player: AudioPlayer?
+    var playbackError: (any Error)?
+    var stateTransitions: [PlaybackState] = []
+
     func reset() {
+        player?.stop()
+        player?.close()
+
         fixtureDir = nil
         workingCopy = nil
         tempDir = nil
@@ -24,5 +32,8 @@ final class TestContext: @unchecked Sendable {
         outputMetadata = nil
         coverArtData = nil
         writeError = nil
+        player = nil
+        playbackError = nil
+        stateTransitions = []
     }
 }

@@ -1,4 +1,3 @@
-import AVFoundation
 import CFFmpeg
 import Foundation
 
@@ -253,7 +252,10 @@ public final class FFmpegDecoder: @unchecked Sendable {
         return false
     }
 
-    public func decodeNextBuffer(maxSamples _: Int = 4096) throws -> AVAudioPCMBuffer? {
+    /// Decode the next frame and pass raw audio data to the handler via ``DecodedFrame``.
+    /// The frame's pointers are only valid for the duration of the callback.
+    /// Throws ``FFmpegError/endOfFile`` when no more data is available.
+    public func decodeNextFrame(handler: (DecodedFrame) throws -> Void) throws {
         guard let formatContext,
               let codecContext,
               let packet,
@@ -287,90 +289,68 @@ public final class FFmpegDecoder: @unchecked Sendable {
 
                 defer { av_frame_unref(frame) }
 
-                // Use passthrough or resampling based on configuration
                 if isPassthrough {
-                    if let buffer = passthroughFrame(frame) {
-                        return buffer
+                    if let decoded = passthroughDecodedFrame(frame) {
+                        try handler(decoded)
+                        return
                     }
                 } else {
-                    if let buffer = resampleFrame(frame) {
-                        return buffer
-                    }
+                    try resampleDecodedFrame(frame, handler: handler)
+                    return
                 }
             }
         }
     }
 
-    private func passthroughFrame(_ frame: UnsafeMutablePointer<AVFrame>) -> AVAudioPCMBuffer? {
+    private func passthroughDecodedFrame(_ frame: UnsafeMutablePointer<AVFrame>) -> DecodedFrame? {
         let sampleCount = frame.pointee.nb_samples
-        guard sampleCount > 0 else { return nil }
-
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(outputSampleRate),
-            channels: AVAudioChannelCount(outputChannels),
-            interleaved: false
-        )!
-
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(sampleCount)
-        ) else { return nil }
-
-        guard let floatData = buffer.floatChannelData,
+        guard sampleCount > 0,
               let extendedData = frame.pointee.extended_data else { return nil }
 
-        // Copy data directly (source is already float32 planar)
-        for ch in 0 ..< Int(outputChannels) {
-            if let srcPtr = extendedData[ch] {
-                let src = UnsafeRawPointer(srcPtr).assumingMemoryBound(to: Float.self)
-                floatData[ch].update(from: src, count: Int(sampleCount))
-            }
+        var pointers: [UnsafePointer<Float>] = []
+        for ch in 0..<Int(outputChannels) {
+            guard let ptr = extendedData[ch] else { return nil }
+            pointers.append(UnsafeRawPointer(ptr).assumingMemoryBound(to: Float.self))
         }
 
-        buffer.frameLength = AVAudioFrameCount(sampleCount)
-        return buffer
+        return DecodedFrame(
+            channelData: pointers,
+            frameCount: Int(sampleCount),
+            sampleRate: Double(outputSampleRate),
+            channelCount: Int(outputChannels)
+        )
     }
 
-    private func resampleFrame(_ frame: UnsafeMutablePointer<AVFrame>) -> AVAudioPCMBuffer? {
-        guard let swrContext else { return nil }
+    private func resampleDecodedFrame(_ frame: UnsafeMutablePointer<AVFrame>, handler: (DecodedFrame) throws -> Void) throws {
+        guard let swrContext else { return }
 
         let outSamples = swr_get_out_samples(swrContext, frame.pointee.nb_samples)
-        guard outSamples > 0 else { return nil }
+        guard outSamples > 0 else { return }
 
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(outputSampleRate),
-            channels: AVAudioChannelCount(outputChannels),
-            interleaved: false
-        )!
+        // Allocate temporary planar buffers for resampled output
+        let channelCount = Int(outputChannels)
+        var buffers: [UnsafeMutablePointer<Float>] = []
+        for _ in 0..<channelCount {
+            buffers.append(.allocate(capacity: Int(outSamples)))
+        }
+        defer {
+            for buf in buffers { buf.deallocate() }
+        }
 
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(outSamples)
-        ) else { return nil }
+        var outPointers: [UnsafeMutablePointer<UInt8>?] = buffers.map {
+            UnsafeMutableRawPointer($0).assumingMemoryBound(to: UInt8.self)
+        }
 
-        // Get pointers to output buffer channels
-        guard let floatData = buffer.floatChannelData else { return nil }
-
-        var outPointers: [UnsafeMutablePointer<UInt8>?] = [
-            UnsafeMutableRawPointer(floatData[0]).assumingMemoryBound(to: UInt8.self),
-            UnsafeMutableRawPointer(floatData[1]).assumingMemoryBound(to: UInt8.self),
-        ]
-
-        // Get input data pointer
-        guard let extendedData = frame.pointee.extended_data else { return nil }
+        guard let extendedData = frame.pointee.extended_data else { return }
 
         let convertedSamples = outPointers.withUnsafeMutableBufferPointer { outBufPtr -> Int32 in
-            // Create input pointer array
             var inPointers: [UnsafePointer<UInt8>?] = []
-            for i in 0 ..< Int(channels) {
+            for i in 0..<Int(channels) {
                 if let ptr = extendedData[i] {
                     inPointers.append(UnsafePointer(ptr))
                 }
             }
-            // Pad if needed
-            while inPointers.count < 2 {
+            while inPointers.count < channelCount {
                 if let first = inPointers.first {
                     inPointers.append(first)
                 } else {
@@ -389,9 +369,16 @@ public final class FFmpegDecoder: @unchecked Sendable {
             }
         }
 
-        guard convertedSamples > 0 else { return nil }
-        buffer.frameLength = AVAudioFrameCount(convertedSamples)
-        return buffer
+        guard convertedSamples > 0 else { return }
+
+        let pointers: [UnsafePointer<Float>] = buffers.map { UnsafePointer($0) }
+        let decoded = DecodedFrame(
+            channelData: pointers,
+            frameCount: Int(convertedSamples),
+            sampleRate: Double(outputSampleRate),
+            channelCount: channelCount
+        )
+        try handler(decoded)
     }
 
     public func seek(to time: TimeInterval) {

@@ -21,6 +21,7 @@ struct BDDTests {
             SetupSteps.self,
             ActionSteps.self,
             VerificationSteps.self,
+            PlaybackSteps.self,
         ])
 
         #expect(result.passed, "Scenario '\(test.description)' failed: \(failureDetails(result))")

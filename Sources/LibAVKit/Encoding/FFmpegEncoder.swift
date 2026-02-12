@@ -1,4 +1,3 @@
-import AVFoundation
 import CFFmpeg
 import Foundation
 
@@ -390,37 +389,37 @@ private extension FFmpegEncoder {
             if ctx.isCancelled() { throw FFmpegEncoderError.cancelled }
 
             do {
-                guard let pcmBuffer = try ctx.decoder.decodeNextBuffer() else { continue }
-                let bufferSamples = Int32(pcmBuffer.frameLength)
-                guard bufferSamples > 0 else { continue }
+                try ctx.decoder.decodeNextFrame { frame in
+                    guard frame.frameCount > 0 else { return }
 
-                guard let framePtr = encodeFrame, let packetPtr = encodePacket else {
-                    throw FFmpegEncoderError.encodingFailed("Frame or packet deallocated unexpectedly")
-                }
+                    guard let framePtr = encodeFrame, let packetPtr = encodePacket else {
+                        throw FFmpegEncoderError.encodingFailed("Frame or packet deallocated unexpectedly")
+                    }
 
-                if let fifo {
-                    // Write decoded samples into the FIFO
-                    writePCMBufferToFifo(fifo, pcmBuffer: pcmBuffer, channels: ctx.outChannels)
+                    if let fifo {
+                        // Write decoded samples into the FIFO
+                        writeDecodedFrameToFifo(fifo, frame: frame, channels: ctx.outChannels)
 
-                    // Drain full frames
-                    while av_audio_fifo_size(fifo) >= frameSize {
-                        totalSamplesEncoded += try encodeFromFifo(
-                            ctx: ctx, fifo: fifo, chunkSize: frameSize,
+                        // Drain full frames
+                        while av_audio_fifo_size(fifo) >= frameSize {
+                            totalSamplesEncoded += try encodeFromFifo(
+                                ctx: ctx, fifo: fifo, chunkSize: frameSize,
+                                framePtr: framePtr, packetPtr: packetPtr,
+                                ptsOffset: totalSamplesEncoded
+                            )
+                        }
+                    } else {
+                        // Variable frame_size: send buffer directly
+                        totalSamplesEncoded += try encodeFromDecodedFrame(
+                            ctx: ctx, frame: frame, frameCount: Int32(frame.frameCount),
                             framePtr: framePtr, packetPtr: packetPtr,
                             ptsOffset: totalSamplesEncoded
                         )
                     }
-                } else {
-                    // Variable frame_size: send buffer directly
-                    totalSamplesEncoded += try encodeFromPCMBuffer(
-                        ctx: ctx, pcmBuffer: pcmBuffer, frameCount: bufferSamples,
-                        framePtr: framePtr, packetPtr: packetPtr,
-                        ptsOffset: totalSamplesEncoded
-                    )
-                }
 
-                if totalExpectedSamples > 0 {
-                    ctx.progress(min(1.0, Double(totalSamplesEncoded) / Double(totalExpectedSamples)))
+                    if totalExpectedSamples > 0 {
+                        ctx.progress(min(1.0, Double(totalSamplesEncoded) / Double(totalExpectedSamples)))
+                    }
                 }
             } catch FFmpegError.endOfFile {
                 decodeFinished = true
@@ -452,17 +451,16 @@ private extension FFmpegEncoder {
     }
 
     /// Write decoded planar float samples from a PCM buffer into the FIFO.
-    func writePCMBufferToFifo(
+    func writeDecodedFrameToFifo(
         _ fifo: OpaquePointer,
-        pcmBuffer: AVAudioPCMBuffer,
+        frame: DecodedFrame,
         channels: Int32
     ) {
-        guard let floatData = pcmBuffer.floatChannelData else { return }
-        let sampleCount = Int32(pcmBuffer.frameLength)
+        let sampleCount = Int32(frame.frameCount)
 
-        // Build array of channel pointers (FLTP layout matches PCM buffer layout)
+        // Build array of channel pointers (FLTP layout matches planar float data)
         var ptrs: [UnsafeMutableRawPointer?] = (0 ..< Int(channels)).map { ch in
-            UnsafeMutableRawPointer(floatData[ch])
+            UnsafeMutableRawPointer(mutating: frame.channelData[ch])
         }
         ptrs.withUnsafeMutableBufferPointer { buf in
             _ = av_audio_fifo_write(fifo, buf.baseAddress, sampleCount)
@@ -557,9 +555,9 @@ private extension FFmpegEncoder {
     }
 
     /// Encode directly from a PCM buffer (for variable frame_size codecs like PCM, FLAC).
-    func encodeFromPCMBuffer(
+    func encodeFromDecodedFrame(
         ctx: EncodeContext,
-        pcmBuffer: AVAudioPCMBuffer,
+        frame: DecodedFrame,
         frameCount: Int32,
         framePtr: UnsafeMutablePointer<AVFrame>,
         packetPtr: UnsafeMutablePointer<AVPacket>,
@@ -574,17 +572,17 @@ private extension FFmpegEncoder {
         framePtr.pointee.pts = ptsOffset
 
         if ctx.needsResample, let swr = ctx.swrCtx {
-            resampleIntoFrame(
+            resampleDecodedFrameIntoEncodeFrame(
                 swr: swr,
                 framePtr: framePtr,
-                pcmBuffer: pcmBuffer,
+                decodedFrame: frame,
                 frameCount: frameCount,
                 outChannels: ctx.outChannels
             )
         } else {
-            copyPlanarData(
+            copyDecodedFrameData(
                 framePtr: framePtr,
-                pcmBuffer: pcmBuffer,
+                decodedFrame: frame,
                 frameCount: frameCount,
                 outChannels: ctx.outChannels
             )
@@ -623,17 +621,15 @@ private extension FFmpegEncoder {
         }
     }
 
-    func resampleIntoFrame(
+    func resampleDecodedFrameIntoEncodeFrame(
         swr: OpaquePointer,
         framePtr: UnsafeMutablePointer<AVFrame>,
-        pcmBuffer: AVAudioPCMBuffer,
+        decodedFrame: DecodedFrame,
         frameCount: Int32,
         outChannels: Int32
     ) {
-        guard let floatData = pcmBuffer.floatChannelData else { return }
-
         let inPointers: [UnsafePointer<UInt8>?] = (0 ..< Int(outChannels)).map { ch in
-            UnsafeRawPointer(floatData[ch]).assumingMemoryBound(to: UInt8.self)
+            UnsafeRawPointer(decodedFrame.channelData[ch]).assumingMemoryBound(to: UInt8.self)
         }
 
         inPointers.withUnsafeBufferPointer { inBuf in
@@ -651,16 +647,15 @@ private extension FFmpegEncoder {
         }
     }
 
-    func copyPlanarData(
+    func copyDecodedFrameData(
         framePtr: UnsafeMutablePointer<AVFrame>,
-        pcmBuffer: AVAudioPCMBuffer,
+        decodedFrame: DecodedFrame,
         frameCount: Int32,
         outChannels: Int32
     ) {
-        guard let floatData = pcmBuffer.floatChannelData else { return }
         for ch in 0 ..< Int(outChannels) {
             if let dst = framePtr.pointee.extended_data[ch] {
-                let src = UnsafeRawPointer(floatData[ch])
+                let src = UnsafeRawPointer(decodedFrame.channelData[ch])
                 dst.update(
                     from: src.assumingMemoryBound(to: UInt8.self),
                     count: Int(frameCount) * MemoryLayout<Float>.size

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![SPM Compatible](https://img.shields.io/badge/SPM-Compatible-brightgreen.svg)](https://swift.org/package-manager)
 
-A Swift package wrapping FFmpeg's C libraries for audio decoding, encoding, metadata reading, tag writing, and cover art embedding. Uses the C API directly — no CLI shelling.
+A Swift package wrapping FFmpeg's C libraries for audio decoding, encoding, playback, metadata reading, tag writing, and cover art embedding. Uses the C API directly — no CLI shelling, no AVFoundation dependency. The only AVFoundation usage is in `AVAudioEngineOutput`, a provided reference implementation of the `AudioOutput` protocol. All other APIs (decoding, encoding, metadata, playback coordination) depend only on Foundation and CFFmpeg.
 
 ## Requirements
 
@@ -35,15 +35,22 @@ Then add `LibAVKit` as a dependency to your target:
 
 ### Decoding
 
-**FFmpegDecoder** decodes audio files to PCM buffers for playback.
+**FFmpegDecoder** decodes audio files to raw PCM via a callback-based API. The `DecodedFrame` passed to the handler holds pointers into FFmpeg's internal frame buffer — valid only for the duration of the callback, zero-copy on the passthrough path.
 
 ```swift
 let decoder = FFmpegDecoder()
 decoder.configure(outputFormat: .cdQuality)
 try decoder.open(url: audioFileURL)
 
-while let buffer = decoder.decodeNextBuffer() {
-    // Process PCM buffer
+while true {
+    do {
+        try decoder.decodeNextFrame { frame in
+            // frame.channelData: [UnsafePointer<Float>] — planar float PCM
+            // frame.frameCount, frame.sampleRate, frame.channelCount
+        }
+    } catch is FFmpegError {
+        break // end of file
+    }
 }
 
 decoder.close()
@@ -53,7 +60,7 @@ Properties available after `open()`: `duration`, `sampleRate`, `channels`, `bitr
 
 ### Encoding
 
-**FFmpegEncoder** encodes PCM audio to compressed or lossless formats.
+**FFmpegEncoder** encodes audio to compressed or lossless formats.
 
 ```swift
 let encoder = FFmpegEncoder()
@@ -135,6 +142,43 @@ try embedder.remove(from: audioFileURL)
 Handles two embedding modes automatically:
 - **OGG containers** (Opus, Vorbis): METADATA_BLOCK_PICTURE Vorbis comment
 - **All others** (FLAC, MP3, AAC, etc.): Attached picture video stream
+
+### Playback
+
+**AudioPlayer** coordinates decoding and audio output. It depends only on Foundation — AVFoundation is not required.
+
+```swift
+let player = AudioPlayer()
+try player.open(url: audioFileURL)
+
+player.onStateChange = { state in print("State: \(state)") }
+player.onProgress = { time in print("Position: \(time)s") }
+
+player.play()
+// player.pause(), player.seek(to: 30), player.stop()
+```
+
+**AudioOutput** is a protocol that abstracts the audio output backend. Implement it to plug in any audio system (Core Audio, SDL, unit test mock, etc.) without importing AVFoundation:
+
+```swift
+class MyCustomOutput: AudioOutput {
+    func configure(sampleRate: Double, channels: Int) throws { /* ... */ }
+    func start() throws { /* ... */ }
+    func pause() { /* ... */ }
+    func stop() { /* ... */ }
+    func scheduleAudio(_ frame: DecodedFrame) {
+        // Copy frame.channelData into your backend's native buffer.
+        // No AVFoundation types involved.
+    }
+    func waitForCompletion(checkCancelled: () -> Bool) -> Bool { /* ... */ }
+    var playbackPosition: TimeInterval { /* ... */ }
+    var volume: Float { get { /* ... */ } set { /* ... */ } }
+}
+
+let player = AudioPlayer(output: MyCustomOutput())
+```
+
+**AVAudioEngineOutput** is the provided reference implementation that bridges `DecodedFrame` to `AVAudioPCMBuffer` internally — the only place in the library that touches AVFoundation.
 
 ## Models
 
@@ -230,14 +274,15 @@ Parametric audio fixtures in `Tests/LibAVKitTests/Fixtures/Parametric/` cover 36
 LibAVKit
 ├── CFFmpeg (system library, internal — not re-exported)
 ├── Models/          Value types: OutputFormat, ConversionConfig, EncodingSettings, etc.
-├── Decoding/        FFmpegDecoder, MetadataReader
+├── Decoding/        FFmpegDecoder, MetadataReader, DecodedFrame
 ├── Encoding/        FFmpegEncoder, FFmpegEncoderConfig, EncoderMetadataWriter
+├── Playback/        AudioPlayer, AudioOutput protocol, AVAudioEngineOutput
 ├── TagWriting/      CFFmpegTagWriter
 ├── ArtEmbedding/    CoverArtEmbedder
 └── Utilities/       VorbisPictureBlock, CustomTagParser
 ```
 
-CFFmpeg wraps the raw C libraries and is **not re-exported** — only the Swift API is public.
+The entire library is decoupled from AVFoundation. Only `AVAudioEngineOutput` imports it — every other file depends solely on Foundation and CFFmpeg. Custom `AudioOutput` implementations (Core Audio, SDL, test mocks) never need to import AVFoundation.
 
 ## License
 
