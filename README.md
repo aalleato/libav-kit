@@ -213,44 +213,14 @@ Playback target format specifying sample rate, channel count, sample format, and
 
 Named, reusable encoding configuration with output format, settings, and optional path template.
 
-## Demo CLI (`libav-play`)
+## Companion App: aux
 
-An internal CLI app that plays audio using LibAVKit. Build first, then run the binary directly for live progress updates (`swift run` buffers stdout, which prevents the progress line from updating in-place):
-
-```bash
-swift build
-LIBAV_PLAY=$(swift build --show-bin-path)/libav-play
-```
-
-### File mode
-
-Plays a local file using `AudioPlayer` with metadata display and progress tracking:
+[aux](https://github.com/aalleato/aux) is a standalone TUI music player built on LibAVKit. It provides a terminal-based library browser with album/track navigation, search/filter, spectrum and oscilloscope visualizers, and keyboard-driven playback controls.
 
 ```bash
-$LIBAV_PLAY song.flac
-$LIBAV_PLAY --volume 0.5 song.mp3
-
-# Quick test with a bundled fixture
-$LIBAV_PLAY Tests/LibAVKitTests/Fixtures/Parametric/flac-44100-stereo.flac
+git clone git@github.com:aalleato/aux.git
+cd aux && swift build
 ```
-
-### STDIN mode
-
-Pipes audio through `Decoder` + `AVAudioEngineOutput` directly. Requires `--format` since FFmpeg can't detect the codec from a pipe:
-
-```bash
-cat song.opus | $LIBAV_PLAY --format opus -
-ffmpeg -i input.wav -f flac - 2>/dev/null | $LIBAV_PLAY --format flac -
-```
-
-### Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--volume` | 1.0 | Playback volume (0.0–1.0) |
-| `--format` | — | Format hint for STDIN (`flac`, `mp3`, `opus`, etc.) |
-
-Press Ctrl+C to stop playback.
 
 ## Testing
 
