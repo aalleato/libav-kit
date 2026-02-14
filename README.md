@@ -19,7 +19,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "git@github.com:aalleato/libav-kit.git", branch: "main"),
+    .package(url: "git@github.com:alleato-llc/libav-kit.git", branch: "main"),
 ]
 ```
 
@@ -215,10 +215,10 @@ Named, reusable encoding configuration with output format, settings, and optiona
 
 ## Companion App: aux
 
-[aux](https://github.com/aalleato/aux) is a standalone TUI music player built on LibAVKit. It provides a terminal-based library browser with album/track navigation, search/filter, spectrum and oscilloscope visualizers, and keyboard-driven playback controls.
+[aux](https://github.com/alleato-llc/aux) is a standalone TUI music player built on LibAVKit. It provides a terminal-based library browser with album/track navigation, search/filter, spectrum and oscilloscope visualizers, and keyboard-driven playback controls.
 
 ```bash
-git clone git@github.com:aalleato/aux.git
+git clone git@github.com:alleato-llc/aux.git
 cd aux && swift build
 ```
 
@@ -248,7 +248,7 @@ swift test --skip BDDTests
 | `cover_art.feature` | 12 | Embed and remove across 6 supported codecs |
 | `metadata.feature` | 11 | Tag write/read round-trip for all codecs |
 
-Uses [PickleKit](https://github.com/aalleato/pickle-kit) with the Swift Testing bridge (`GherkinTestScenario`).
+Uses [PickleKit](https://github.com/alleato-llc/pickle-kit) with the Swift Testing bridge (`GherkinTestScenario`).
 
 ### Filtering Scenarios
 
