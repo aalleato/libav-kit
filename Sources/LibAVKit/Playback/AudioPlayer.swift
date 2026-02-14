@@ -18,7 +18,6 @@ public final class AudioPlayer: @unchecked Sendable {
 
     // MARK: - Read-only properties (available after open)
 
-    public private(set) var metadata = AudioMetadata()
     public private(set) var duration: TimeInterval = 0
     public private(set) var sampleRate: Int = 0
     public private(set) var channels: Int = 0
@@ -103,8 +102,43 @@ public final class AudioPlayer: @unchecked Sendable {
             throw PlaybackError.decodeFailed("Failed to configure decoder output: \(error)")
         }
 
-        let reader = MetadataReader()
-        metadata = (try? reader.read(url: url)) ?? AudioMetadata()
+        do {
+            try output.configure(sampleRate: Double(sampleRate), channels: channels)
+        } catch {
+            throw PlaybackError.audioOutputFailed(error.localizedDescription)
+        }
+
+        state = .idle
+    }
+
+    public func open(path: String, inputFormat: String? = nil) throws {
+        close()
+
+        do {
+            try decoder.open(path: path, inputFormat: inputFormat)
+        } catch {
+            throw PlaybackError.openFailed(path)
+        }
+
+        guard let sourceFormat = decoder.sourceFormat else {
+            throw PlaybackError.decodeFailed("Could not detect format from: \(path)")
+        }
+
+        let outputFormat = AudioOutputFormat(
+            sampleRate: sourceFormat.sampleRate,
+            channelCount: sourceFormat.channelCount,
+            sampleFormat: .float32,
+            isInterleaved: false
+        )
+        do {
+            try decoder.reconfigure(outputFormat: outputFormat)
+        } catch {
+            throw PlaybackError.decodeFailed("Failed to configure decoder output: \(error)")
+        }
+
+        duration = decoder.duration
+        sampleRate = decoder.sampleRate
+        channels = decoder.channels
 
         do {
             try output.configure(sampleRate: Double(sampleRate), channels: channels)
@@ -126,7 +160,6 @@ public final class AudioPlayer: @unchecked Sendable {
         duration = 0
         sampleRate = 0
         channels = 0
-        metadata = AudioMetadata()
     }
 
     // MARK: - Playback control

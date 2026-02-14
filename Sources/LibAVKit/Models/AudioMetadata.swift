@@ -19,5 +19,7 @@ public struct AudioMetadata: Sendable {
     /// Indicates if this is a Dolby Atmos track (E-AC-3 JOC or TrueHD Atmos)
     public var isAtmos: Bool = false
 
+    public static let empty = AudioMetadata()
+
     public init() {}
 }
